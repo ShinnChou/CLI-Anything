@@ -81,6 +81,9 @@ CLI-Anything is distributed as a Claude Code plugin marketplace hosted on GitHub
 
 That's it. The plugin is now available in your Claude Code session.
 
+**Windows note:** Claude Code runs shell commands via `bash`. On Windows, install Git for Windows (includes `bash` and
+`cygpath`) or use WSL; otherwise commands may fail with `cygpath: command not found`.
+
 **Step 3: Build a CLI in One Command**
 
 ```bash

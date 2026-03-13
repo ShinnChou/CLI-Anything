@@ -81,6 +81,9 @@ CLI-Anything 以 Claude Code 插件市场的形式托管在 GitHub 上。
 
 搞定。插件已经在你的 Claude Code 会话中可用了。
 
+**Windows 注意：** Claude Code 通过 `bash` 执行命令。Windows 下请安装 Git for Windows（包含 `bash` 和 `cygpath`）
+或使用 WSL，否则可能出现 `cygpath: command not found`。
+
 **第三步：一行命令生成 CLI**
 
 ```bash
