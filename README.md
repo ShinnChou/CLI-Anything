@@ -930,7 +930,7 @@ Each application received complete, production-ready CLI interfaces — not demo
 </tr>
 </table>
 
-> **100% pass rate** across all 2,146 tests — 1,594 unit tests + 533 end-to-end tests + 19 Node.js tests.
+> **100% pass rate** across all 2,146 tests — 1,571 unit tests + 556 end-to-end tests + 19 Node.js tests.
 
 ---
 
