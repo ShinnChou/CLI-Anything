@@ -92,6 +92,7 @@
 !/cloudcompare/
 !/openscreen/
 !/n8n/
+!/obsidian/
 
 # Step 5: Inside each software dir, ignore everything (including dotfiles)
 /gimp/*
@@ -168,6 +169,8 @@
 /exa/.*
 /n8n/*
 /n8n/.*
+/obsidian/*
+/obsidian/.*
 
 # Step 6: ...except agent-harness/
 !/gimp/agent-harness/
@@ -211,6 +214,7 @@
 !/wiremock/agent-harness/
 !/exa/agent-harness/
 !/n8n/agent-harness/
+!/obsidian/agent-harness/
 
 # Step 7: Ignore build artifacts within allowed dirs
 **/__pycache__/

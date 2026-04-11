@@ -592,6 +592,20 @@
       "category": "graphics",
       "contributor": "rsasaki0109",
       "contributor_url": "https://github.com/rsasaki0109"
+    },
+    {
+      "name": "obsidian",
+      "display_name": "Obsidian",
+      "version": "1.0.0",
+      "description": "Knowledge management and note-taking — manage notes, search vault, execute commands via Obsidian Local REST API",
+      "requires": "Obsidian desktop app with Local REST API plugin enabled",
+      "homepage": "https://obsidian.md",
+      "install_cmd": "pip install git+https://github.com/HKUDS/CLI-Anything.git#subdirectory=obsidian/agent-harness",
+      "entry_point": "cli-anything-obsidian",
+      "skill_md": "obsidian/agent-harness/cli_anything/obsidian/skills/SKILL.md",
+      "category": "knowledge",
+      "contributor": "dorukozgen",
+      "contributor_url": "https://github.com/dorukozgen"
     }
   ]
 }
