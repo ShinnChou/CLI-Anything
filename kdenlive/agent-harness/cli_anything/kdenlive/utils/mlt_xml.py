@@ -1,7 +1,8 @@
 """Kdenlive CLI - MLT XML generation helpers and timecode conversions."""
 
 import re
-from typing import Dict, Any, Optional
+import uuid
+from typing import Dict, Any, List, Optional
 
 
 def xml_escape(s: str) -> str:
@@ -70,11 +71,21 @@ def _indent(text: str, level: int) -> str:
     return prefix + text
 
 
+def _order_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Order tracks for Kdenlive: audio tracks first, then video tracks."""
+    audio = [t for t in tracks if t.get("type") == "audio"]
+    video = [t for t in tracks if t.get("type") != "audio"]
+    return audio + video
+
+
 def build_mlt_xml(project: Dict[str, Any]) -> str:
     """Build a complete MLT XML document from a project dictionary.
 
-    Generates valid MLT XML with Kdenlive metadata, suitable for
-    opening in Kdenlive or processing with melt.
+    Generates valid Kdenlive MLT XML matching the real Kdenlive file format:
+    - Separate producer instances for bin (master) vs timeline (service copies)
+    - Each track is a tractor wrapping A/B playlists
+    - Main tractor references track tractors
+    - Internal mix/composite transitions and track filters
     """
     profile = project.get("profile", {})
     width = profile.get("width", 1920)
@@ -89,13 +100,36 @@ def build_mlt_xml(project: Dict[str, Any]) -> str:
     sar_num = dar_num * height
     sar_den = dar_den * width
 
+    # Order tracks: audio first, then video (Kdenlive convention)
+    tracks = _order_tracks(project.get("tracks", []))
+
+    # Compute timeline duration for black track
+    timeline_duration_frames = 0
+    for track in tracks:
+        for clip_entry in track.get("clips", []):
+            clip_end = clip_entry.get("position", 0) + (clip_entry.get("out", 0) - clip_entry.get("in", 0))
+            end_frames = seconds_to_frames(clip_end, fps_num, fps_den)
+            if end_frames > timeline_duration_frames:
+                timeline_duration_frames = end_frames
+    if timeline_duration_frames == 0:
+        timeline_duration_frames = seconds_to_frames(300, fps_num, fps_den)
+
+    # Build lookup: clip_id -> bin clip data & kdenlive numeric id
+    bin_clips = project.get("bin", [])
+    clip_kdenlive_ids = {}
+    clip_sources = {}
+    for idx, clip in enumerate(bin_clips):
+        kid = idx + 2  # kdenlive:id starts from 2 (0,1 reserved)
+        clip_kdenlive_ids[clip["id"]] = kid
+        clip_sources[clip["id"]] = clip
+
     lines = []
     lines.append('<?xml version="1.0" encoding="utf-8"?>')
     lines.append('<mlt LC_NUMERIC="C" version="7.0.0" '
                  f'title="{xml_escape(project.get("name", "untitled"))}" '
-                 f'producer="kdenlive-cli">')
+                 f'producer="main_bin">')
 
-    # Profile
+    # ── Profile ─────────────────────────────────────────────────
     lines.append(f'  <profile description="{xml_escape(profile.get("name", "custom"))}" '
                  f'width="{width}" height="{height}" '
                  f'progressive="{1 if progressive else 0}" '
@@ -104,40 +138,103 @@ def build_mlt_xml(project: Dict[str, Any]) -> str:
                  f'frame_rate_num="{fps_num}" frame_rate_den="{fps_den}" '
                  f'colorspace="709"/>')
 
-    # Producers from bin
-    bin_clips = project.get("bin", [])
+    # ── Bin producers (master copies, referenced from main_bin) ──
     for clip in bin_clips:
         clip_id = xml_escape(clip["id"])
         source = xml_escape(clip.get("source", ""))
         duration_frames = seconds_to_frames(clip.get("duration", 0), fps_num, fps_den)
+        kid = clip_kdenlive_ids[clip["id"]]
         lines.append(f'  <producer id="{clip_id}" in="0" out="{max(duration_frames - 1, 0)}">')
         lines.append(f'    <property name="resource">{source}</property>')
         lines.append(f'    <property name="kdenlive:clipname">{xml_escape(clip.get("name", ""))}</property>')
         lines.append(f'    <property name="kdenlive:clip_type">{_clip_type_num(clip.get("type", "video"))}</property>')
         lines.append(f'    <property name="length">{duration_frames}</property>')
+        lines.append(f'    <property name="kdenlive:folderid">-1</property>')
+        lines.append(f'    <property name="kdenlive:id">{kid}</property>')
         lines.append('  </producer>')
 
-    # Playlists for each track
-    tracks = project.get("tracks", [])
-    for track in tracks:
-        track_id = f"playlist{track['id']}"
-        lines.append(f'  <playlist id="{xml_escape(track_id)}">')
-        lines.append(f'    <property name="kdenlive:track_name">{xml_escape(track.get("name", ""))}</property>')
+    # ── main_bin playlist (project bin) ──────────────────────────
+    doc_uuid = str(uuid.uuid4())
+    lines.append('  <playlist id="main_bin">')
+    lines.append('    <property name="kdenlive:docproperties.version">1.04</property>')
+    lines.append(f'    <property name="kdenlive:docproperties.profile">{xml_escape(profile.get("name", "custom"))}</property>')
+    lines.append(f'    <property name="kdenlive:docproperties.uuid">{doc_uuid}</property>')
+    lines.append('    <property name="kdenlive:docproperties.kdenliveversion">24.02</property>')
+    lines.append('    <property name="xml_retain">1</property>')
+    for clip in bin_clips:
+        clip_id = xml_escape(clip["id"])
+        duration_frames = seconds_to_frames(clip.get("duration", 0), fps_num, fps_den)
+        lines.append(f'    <entry producer="{clip_id}" in="0" out="{max(duration_frames - 1, 0)}"/>')
+    lines.append('  </playlist>')
 
-        hide_val = ""
-        if track.get("mute", False) and track.get("hide", False):
-            hide_val = "both"
-        elif track.get("mute", False):
-            hide_val = "audio"
-        elif track.get("hide", False):
-            hide_val = "video"
-        if hide_val:
-            lines.append(f'    <property name="hide">{hide_val}</property>')
+    # ── Black track producer (no kdenlive:id — internal) ─────────
+    lines.append(f'  <producer id="black_track" in="0" out="{timeline_duration_frames}">')
+    lines.append('    <property name="length">2147483647</property>')
+    lines.append('    <property name="eof">continue</property>')
+    lines.append('    <property name="resource">black</property>')
+    lines.append('    <property name="aspect_ratio">1</property>')
+    lines.append('    <property name="mlt_service">color</property>')
+    lines.append('    <property name="kdenlive:playlistid">black_track</property>')
+    lines.append('    <property name="mlt_image_format">rgba</property>')
+    lines.append('    <property name="set.test_audio">0</property>')
+    lines.append('  </producer>')
+
+    # ── Per-track: service producers, A/B playlists, tractor ─────
+    svc_producer_counter = 0
+    filter_counter = 0
+    playlist_counter = 0
+    tractor_counter = 0
+    track_tractor_ids = []
+
+    for track in tracks:
+        is_audio = track.get("type") == "audio"
+        hide_sub = "video" if is_audio else "audio"
+
+        playlist_a_id = f"playlist{playlist_counter}"
+        playlist_b_id = f"playlist{playlist_counter + 1}"
+        tractor_id = f"tractor{tractor_counter}"
+
+        # Create separate "service" producers for each clip on this track
+        # and map them to playlist entries
+        clip_entries_for_playlist = []
+        for clip_entry in track.get("clips", []):
+            src_clip_id = clip_entry.get("clip_id", "")
+            src_clip = clip_sources.get(src_clip_id)
+            if not src_clip:
+                continue
+
+            kid = clip_kdenlive_ids.get(src_clip_id, 0)
+            source = xml_escape(src_clip.get("source", ""))
+            duration_frames = seconds_to_frames(src_clip.get("duration", 0), fps_num, fps_den)
+            svc_id = f"svc_producer{svc_producer_counter}"
+            svc_producer_counter += 1
+
+            # Service producer: a copy of the bin clip for timeline use
+            lines.append(f'  <producer id="{svc_id}" in="0" out="{max(duration_frames - 1, 0)}">')
+            lines.append(f'    <property name="resource">{source}</property>')
+            lines.append(f'    <property name="kdenlive:clipname">{xml_escape(src_clip.get("name", ""))}</property>')
+            lines.append(f'    <property name="kdenlive:clip_type">{_clip_type_num(src_clip.get("type", "video"))}</property>')
+            lines.append(f'    <property name="length">{duration_frames}</property>')
+            lines.append(f'    <property name="kdenlive:id">{kid}</property>')
+            lines.append(f'    <property name="mlt_service">avformat-novalidate</property>')
+            if is_audio:
+                lines.append('    <property name="set.test_audio">0</property>')
+                lines.append('    <property name="set.test_image">1</property>')
+            else:
+                lines.append('    <property name="set.test_audio">1</property>')
+                lines.append('    <property name="set.test_image">0</property>')
+            lines.append('  </producer>')
+
+            clip_entries_for_playlist.append((svc_id, clip_entry, kid))
+
+        # Playlist A (has clip entries)
+        lines.append(f'  <playlist id="{playlist_a_id}">')
+        if is_audio:
+            lines.append('    <property name="kdenlive:audio_track">1</property>')
 
         prev_end = 0.0
-        for clip_entry in track.get("clips", []):
+        for svc_id, clip_entry, kid in clip_entries_for_playlist:
             pos = clip_entry.get("position", 0.0)
-            # Insert blank for gap
             gap = pos - prev_end
             if gap > 0.001:
                 gap_frames = seconds_to_frames(gap, fps_num, fps_den)
@@ -145,10 +242,9 @@ def build_mlt_xml(project: Dict[str, Any]) -> str:
 
             in_frames = seconds_to_frames(clip_entry.get("in", 0), fps_num, fps_den)
             out_frames = seconds_to_frames(clip_entry.get("out", 0), fps_num, fps_den)
-            clip_ref = xml_escape(clip_entry.get("clip_id", ""))
-            lines.append(f'    <entry producer="{clip_ref}" in="{in_frames}" out="{max(out_frames - 1, 0)}">')
+            lines.append(f'    <entry producer="{svc_id}" in="{in_frames}" out="{max(out_frames - 1, 0)}">')
+            lines.append(f'      <property name="kdenlive:id">{kid}</property>')
 
-            # Filters on this clip entry
             for filt in clip_entry.get("filters", []):
                 mlt_svc = xml_escape(filt.get("mlt_service", ""))
                 lines.append(f'      <filter mlt_service="{mlt_svc}">')
@@ -163,32 +259,127 @@ def build_mlt_xml(project: Dict[str, Any]) -> str:
 
         lines.append('  </playlist>')
 
-    # Tractor (main timeline)
-    lines.append('  <tractor id="maintractor">')
-    for track in tracks:
-        track_id = f"playlist{track['id']}"
-        lines.append(f'    <track producer="{xml_escape(track_id)}"/>')
+        # Playlist B (always empty — used for transitions/split edits)
+        lines.append(f'  <playlist id="{playlist_b_id}"/>')
 
-    # Transitions
+        # Track tractor
+        lines.append(f'  <tractor id="{tractor_id}" in="0">')
+        if is_audio:
+            lines.append('    <property name="kdenlive:audio_track">1</property>')
+        lines.append('    <property name="kdenlive:trackheight">67</property>')
+        lines.append('    <property name="kdenlive:timeline_active">1</property>')
+        lines.append('    <property name="kdenlive:collapsed">0</property>')
+        lines.append(f'    <track hide="{hide_sub}" producer="{playlist_a_id}"/>')
+        lines.append(f'    <track hide="{hide_sub}" producer="{playlist_b_id}"/>')
+        # Internal track filters (volume, panner, audiolevel)
+        lines.append(f'    <filter id="filter{filter_counter}">')
+        lines.append('      <property name="window">75</property>')
+        lines.append('      <property name="max_gain">20dB</property>')
+        lines.append('      <property name="mlt_service">volume</property>')
+        lines.append('      <property name="internal_added">237</property>')
+        lines.append('      <property name="disable">1</property>')
+        lines.append('    </filter>')
+        filter_counter += 1
+        lines.append(f'    <filter id="filter{filter_counter}">')
+        lines.append('      <property name="channel">-1</property>')
+        lines.append('      <property name="mlt_service">panner</property>')
+        lines.append('      <property name="internal_added">237</property>')
+        lines.append('      <property name="start">0.5</property>')
+        lines.append('      <property name="disable">1</property>')
+        lines.append('    </filter>')
+        filter_counter += 1
+        lines.append(f'    <filter id="filter{filter_counter}">')
+        lines.append('      <property name="iec_scale">0</property>')
+        lines.append('      <property name="mlt_service">audiolevel</property>')
+        lines.append('      <property name="peak">1</property>')
+        lines.append('      <property name="disable">1</property>')
+        lines.append('    </filter>')
+        filter_counter += 1
+        lines.append('  </tractor>')
+
+        track_tractor_ids.append(tractor_id)
+        playlist_counter += 2
+        tractor_counter += 1
+
+    # ── Main tractor (timeline) ──────────────────────────────────
+    main_tractor_id = f"tractor{tractor_counter}"
+    lines.append(f'  <tractor id="{main_tractor_id}" in="0" out="{timeline_duration_frames}">')
+
+    # Black track first (direct reference, no wrapper playlist)
+    lines.append('    <track producer="black_track"/>')
+    for tid in track_tractor_ids:
+        lines.append(f'    <track producer="{tid}"/>')
+
+    # Internal Kdenlive transitions (mix for audio, composite for video)
+    trans_counter = 0
+    for tractor_idx, track in enumerate(tracks, start=1):
+        is_audio = track.get("type") == "audio"
+        if is_audio:
+            lines.append(f'    <transition id="transition{trans_counter}">')
+            lines.append('      <property name="a_track">0</property>')
+            lines.append(f'      <property name="b_track">{tractor_idx}</property>')
+            lines.append('      <property name="mlt_service">mix</property>')
+            lines.append('      <property name="kdenlive_id">mix</property>')
+            lines.append('      <property name="internal_added">237</property>')
+            lines.append('      <property name="always_active">1</property>')
+            lines.append('      <property name="accepts_blanks">1</property>')
+            lines.append('      <property name="sum">1</property>')
+            lines.append('    </transition>')
+        else:
+            lines.append(f'    <transition id="transition{trans_counter}">')
+            lines.append('      <property name="a_track">0</property>')
+            lines.append(f'      <property name="b_track">{tractor_idx}</property>')
+            lines.append('      <property name="version">0.1</property>')
+            lines.append('      <property name="mlt_service">frei0r.cairoblend</property>')
+            lines.append('      <property name="kdenlive_id">frei0r.cairoblend</property>')
+            lines.append('      <property name="internal_added">237</property>')
+            lines.append('      <property name="always_active">1</property>')
+            lines.append('    </transition>')
+        trans_counter += 1
+
+    # User-defined transitions (track indices shifted +1 for black track)
     for trans in project.get("transitions", []):
         mlt_svc = xml_escape(trans.get("mlt_service", ""))
         pos_frames = seconds_to_frames(trans.get("position", 0), fps_num, fps_den)
         dur_frames = seconds_to_frames(trans.get("duration", 1), fps_num, fps_den)
-        # Find track indices
-        a_idx = _track_index(tracks, trans["track_a"])
-        b_idx = _track_index(tracks, trans["track_b"])
+        a_idx = _track_index(tracks, trans["track_a"]) + 1
+        b_idx = _track_index(tracks, trans["track_b"]) + 1
         lines.append(f'    <transition mlt_service="{mlt_svc}" '
                      f'in="{pos_frames}" out="{pos_frames + dur_frames}" '
                      f'a_track="{a_idx}" b_track="{b_idx}">')
         for pk, pv in trans.get("params", {}).items():
             if pk in ("duration",):
-                continue  # duration already encoded in in/out
+                continue
             lines.append(f'      <property name="{xml_escape(pk)}">{xml_escape(str(pv))}</property>')
         lines.append('    </transition>')
 
+    # Master volume/panner/audiolevel filters on main tractor
+    lines.append(f'    <filter id="filter{filter_counter}">')
+    lines.append('      <property name="window">75</property>')
+    lines.append('      <property name="max_gain">20dB</property>')
+    lines.append('      <property name="mlt_service">volume</property>')
+    lines.append('      <property name="internal_added">237</property>')
+    lines.append('      <property name="disable">1</property>')
+    lines.append('    </filter>')
+    filter_counter += 1
+    lines.append(f'    <filter id="filter{filter_counter}">')
+    lines.append('      <property name="channel">-1</property>')
+    lines.append('      <property name="mlt_service">panner</property>')
+    lines.append('      <property name="internal_added">237</property>')
+    lines.append('      <property name="start">0.5</property>')
+    lines.append('      <property name="disable">1</property>')
+    lines.append('    </filter>')
+    filter_counter += 1
+    lines.append(f'    <filter id="filter{filter_counter}">')
+    lines.append('      <property name="iec_scale">0</property>')
+    lines.append('      <property name="mlt_service">audiolevel</property>')
+    lines.append('      <property name="peak">1</property>')
+    lines.append('      <property name="disable">1</property>')
+    lines.append('    </filter>')
+
     lines.append('  </tractor>')
 
-    # Guides as Kdenlive metadata
+    # ── Kdenlive document metadata (guides) ──────────────────────
     guides = project.get("guides", [])
     if guides:
         lines.append('  <kdenlivedoc>')
