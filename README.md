@@ -163,7 +163,7 @@ That's it. The plugin is now available in your Claude Code session.
 /cli-anything ./gimp
 ```
 
-Use `/cli-anything` for the main build command in the current docs. Only the auxiliary commands use the `:subcommand` form, such as `/cli-anything:refine`, `/cli-anything:test`, and `/cli-anything:validate`. Some older Claude Code 2.x releases also accepted `/cli-anything:cli-anything`; this guide uses the current `/cli-anything` form so the primary examples stay consistent.
+Older Claude Code 2.x releases also accepted `/cli-anything:cli-anything`; auxiliary commands still use the `:subcommand` form (e.g. `/cli-anything:refine`).
 
 This runs the full pipeline:
 1. 🔍 **Analyze** — Scans source code, maps GUI actions to APIs
