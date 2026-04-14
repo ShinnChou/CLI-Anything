@@ -844,6 +844,25 @@
           "url": "https://github.com/dorukozgen"
         }
       ]
+    },
+    {
+      "name": "safari",
+      "display_name": "Safari",
+      "version": "1.0.0",
+      "description": "Native macOS Safari browser automation via safari-mcp — 84 tools for navigation, DOM, forms, network capture, and screenshots",
+      "requires": "macOS, Safari, safari-mcp (npm install -g safari-mcp)",
+      "homepage": "https://github.com/achiya-automation/safari-mcp",
+      "source_url": null,
+      "install_cmd": "pip install git+https://github.com/HKUDS/CLI-Anything.git#subdirectory=safari/agent-harness",
+      "entry_point": "cli-anything-safari",
+      "skill_md": "safari/agent-harness/cli_anything/safari/skills/SKILL.md",
+      "category": "web",
+      "contributors": [
+        {
+          "name": "achiya-automation",
+          "url": "https://github.com/achiya-automation"
+        }
+      ]
     }
   ]
 }
